@@ -15,9 +15,16 @@ class Agent:
 
 
 class Environment:
-    def __init__(self, M, N, Snr, RxList, TxList, ObjList, device='cpu'):
+    def __init__(self, RxList, TxList, ObjList, device='cpu', deltat=1, t0=100, tau0=100, M=100, N=100, N_antenna=8, Snr=10):
         self.M = M
         self.N = N
+        self.t0 = t0
+        self.deltat=deltat
+        self.tau0 = tau0
+        self.device=device
+        self.N_antenna=N_antenna
+        
+    
         self.snr = Snr
         self.device = device
 
@@ -37,6 +44,9 @@ class Environment:
         for lst in [self.RxList, self.TxList, self.ObjList]:
             for agent in lst:
                 agent.step()
+
+    def calculateDDResponse():
+        return 0
 
     def get_report(self):
         """Print all agent positions."""
@@ -71,24 +81,23 @@ class Environment:
 
 
 
-if __name__ == '__ main __':
-    # Define agents
-    RxList = [Agent(pos=[1, 2], vel=[1, 2], name="Rx1")]
-    TxList = [Agent(pos=[1, 0], vel=[1, 0], name="Tx1")]
-    ObjList = [Agent(pos=[2, 3], vel=[0.5, -1], name="Obj1")]
+# Define agents
+RxList = [Agent(pos=[1, 2], vel=[1, 2], name="Rx1")]
+TxList = [Agent(pos=[1, 0], vel=[1, 0], name="Tx1")]
+ObjList = [Agent(pos=[2, 3], vel=[0.5, -1], name="Obj1")]
 
-    # Create environment
-    env = Environment(M=64, N=64, Snr=10,
-                    RxList=RxList, TxList=TxList, ObjList=ObjList)
+# Create environment
+env = Environment(M=64, N=64, Snr=10,
+                RxList=RxList, TxList=TxList, ObjList=ObjList)
 
 
-    for i in range(10):
-        print("Before step:")
-        env.get_report()
-        # Plot environment
-        env.plot()
+for i in range(10):
+    print("Before step:")
+    env.get_report()
+    # Plot environment
+    env.plot()
 
-        # Step once
-        env.step()
+    # Step once
+    env.step()
 
 
