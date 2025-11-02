@@ -108,30 +108,55 @@ def awgn(x: torch.Tensor, SNRdB: float, measured: bool = False) -> torch.Tensor:
     return x + noise
 
 
-def OTFS_approximatedOutput(Xdd: torch.Tensor, T: float, delay: float, Doppler: float,deltaf: float) -> torch.Tensor:
+def OTFS_approximatedOutput(Xdd: torch.Tensor, T: float, delay: float, Doppler: float, deltaf: float) -> torch.Tensor:
+    M, N = Xdd.shape
+    lt = math.ceil(delay / (T / M))
+    deltaf = 1.0 / T
+    kn = math.ceil(Doppler / (deltaf / N))
+    Ydd = torch.roll(Xdd, shifts=(lt, kn), dims=(0, 1))
+    return Ydd.T.contiguous().view(-1)  # <-- 1-D
+
+# --- add this next to your other helpers ---
+def OTFS_output(Xdd: torch.Tensor, T: float, delay: float, Doppler: float) -> torch.Tensor:
     """
-    PyTorch equivalent of MATLAB OTFS_approximatedOutput
-    (integer delay–Doppler shift approximation).
-    
-    Args:
-        Xdd: delay–Doppler input grid (M x N) complex tensor
-        T: frame duration (s)
-        delay: target delay (s)
-        Doppler: target Doppler shift (Hz)
-    Returns:
-        ydd: flattened column-major vector (M*N x 1)
+    PyTorch version of your MATLAB OTFS_output:
+      - fractional delay via diagonal phasor in TF then IFFT
+      - fractional Doppler via time-domain complex exponential
+      - returns a 1-D vector (column-major flatten) to ease inner products
     """
     M, N = Xdd.shape
-    lt = math.ceil(delay / (T / M))       # delay index shift
-    deltaf = 1.0 / T                      # subcarrier spacing
-    kn = math.ceil(Doppler / (deltaf / N))# Doppler index shift
+    lt = math.ceil(delay / (T / M))         # integer delay shift used in circshift
+    deltaf = 1.0 / T
 
-    # circshift in both dimensions
-    Ydd = torch.roll(Xdd, shifts=(lt, kn), dims=(0, 1))
+    # ISFFT: Delay-Doppler -> TF
+    Xtf = ISFFT(Xdd, M, N)                  # shape [M, N], complex
 
-    # column-major flattening (MATLAB : operator)
-    ydd = Ydd.T.contiguous().view(-1, 1)
-    return ydd
+    # Apply fractional delay in TF: diag(exp(-j2π k Δf delay)) * Xtf
+    k = torch.arange(M, device=Xdd.device, dtype=torch.float32)
+    ph_delay = torch.exp(-1j * 2 * math.pi * k * deltaf * float(delay))  # [M]
+    A = (ph_delay[:, None] * Xtf)            # broadcast over N
+
+    # IFFT across subcarriers (rows), scale by sqrt(M)
+    B = torch.fft.ifft(A, dim=0) * math.sqrt(M)  # [M, N]
+
+    # circshift rows by -lt, then vectorize column-major and shift by +lt
+    B_shift = torch.roll(B, shifts=-lt, dims=0)  # [M, N]
+    vec = B_shift.T.contiguous().view(-1)        # (MN,) column-major
+    vec = torch.roll(vec, shifts=lt, dims=0)     # (MN,)
+
+    # Apply fractional Doppler in time domain: exp(j2π Doppler n T/M)
+    n = torch.arange(M * N, device=Xdd.device, dtype=torch.float32)
+    doppler_ph = torch.exp(1j * 2 * math.pi * float(Doppler) * n * (T / M))
+    rt = doppler_ph * vec                         # (MN,)
+
+    # Reshape back to [M, N] consistent with MATLAB reshape(rt,M,N)
+    Rt = rt.view(N, M).T                          # [M, N]
+
+    # Ydd = fft(Rt.').' / sqrt(N)
+    Ydd = torch.fft.fft(Rt.T, dim=0).T / math.sqrt(N)  # [M, N]
+
+    # Return column-major vector (1-D) for easy vdot
+    return Ydd.T.contiguous().view(-1)            # (MN,)
 
 
 
@@ -149,12 +174,12 @@ cpDuration = cpSize / M * T
 #% Channel parameters
 c0 = 3e8# % light of speed
 fc = 30e9# % carrier frequency
-targetDistance = 30
+targetDistance = 10
 targetDelay = 2*targetDistance/c0
 targetVelocity = 72 / 3.6
 targetDoppler = (2 * targetVelocity)/ (c0 / fc)
 targetCoefficient = torch.exp(1j * 2 * torch.pi * torch.rand(1))
-SNRdB = -10
+SNRdB = 10
 maximumSensingRange = c0 * cpDuration / 2
 
 
@@ -195,7 +220,7 @@ txSignal_delay= torch.roll(
 dopplerEffect = torch.exp(1j * 2 * math.pi * doppler * torch.arange(M*N) * T / M)
 rxSignal = alpha * dopplerEffect * txSignal_delay
 rxSignal = torch.sum(rxSignal, dim=1)
-rxSignal = awgn(x=rxSignal,SNRdB=SNRdB,measured=False)
+# rxSignal = awgn(x=rxSignal,SNRdB=SNRdB,measured=False)
 
 
 # %%
@@ -240,40 +265,53 @@ phi = (math.sqrt(5) - 1) / 2.0
 a1, b1 = mi - 2, mi
 a2, b2 = ni - N/2 - 2, ni - N/2
 for k in range(K):
-    I1 = b1 - a1; I2 = b2 - a2;
-    x1 = a1 + (1 - phi) * I1; x2 = a1 + phi * I1;
-    y1 = a2 + (1 - phi) * I2; y2 = a2 + phi * I2;
-    ydd_11 = OTFS_output(Xdd, T, x1 * T / M, y1 * deltaf / N);
-    ydd_12 = OTFS_output(Xdd, T, x1 * T / M, y2 * deltaf / N);
-    ydd_21 = OTFS_output(Xdd, T, x2 * T / M, y1 * deltaf / N);
-    ydd_22 = OTFS_output(Xdd, T, x2 * T / M, y2 * deltaf / N);
-    f11 = abs(ydd_11.T * ydd)^2;
-    f12 = abs(ydd_12.T * ydd)^2;
-    f21 = abs(ydd_21.T * ydd)^2;
-    f22 = abs(ydd_22.T * ydd)^2;
-    idx,_ = torch.max([f11, f12, f21, f22]);
-    match idx:
-        case 1:
-              b1 = x2; b2 = y2
-        case 2:
-              b1 = x2; a2 = y1
-        case 3:
-              a1 = x1; b2 = y2
-        case 4:
-              a1 = x1; a2 = y1
+    I1 = b1 - a1; I2 = b2 - a2
+    x1 = a1 + (1 - phi) * I1; x2 = a1 + phi * I1
+    y1 = a2 + (1 - phi) * I2; y2 = a2 + phi * I2
+    ydd_11 = OTFS_output(Xdd, T, x1 * T / M, y1 * deltaf / N)
+    ydd_12 = OTFS_output(Xdd, T, x1 * T / M, y2 * deltaf / N)
+    ydd_21 = OTFS_output(Xdd, T, x2 * T / M, y1 * deltaf / N)
+    ydd_22 = OTFS_output(Xdd, T, x2 * T / M, y2 * deltaf / N)
+# Inside the loop, after computing ydd_11, ydd_12, ydd_21, ydd_22:
+    ydd_11 = ydd_11.to(torch.complex64).view(-1)
+    ydd_12 = ydd_12.to(torch.complex64).view(-1)
+    ydd_21 = ydd_21.to(torch.complex64).view(-1)
+    ydd_22 = ydd_22.to(torch.complex64).view(-1)
 
-# estimatedDelay = (a1 + b1) / 2 * T / M;
-# estimatedDoppler = (a2 + b2) / 2 * deltaf / N;
-# estimatedRange = estimatedDelay * c0 / 2;
-# estimatedVelocity = estimatedDoppler * c0 / fc / 2;
-# Hp = OTFS_output(Xdd, T, estimatedDelay, estimatedDoppler);
-# estimatedAlpha = (Hp' * Hp) \ (Hp' * ydd);
+    f11 = torch.abs(torch.vdot(ydd_11, ydd)) ** 2
+    f12 = torch.abs(torch.vdot(ydd_12, ydd)) ** 2
+    f21 = torch.abs(torch.vdot(ydd_21, ydd)) ** 2
+    f22 = torch.abs(torch.vdot(ydd_22, ydd)) ** 2
+    vals = torch.stack([f11, f12, f21, f22])
+    idx  = int(torch.argmax(vals))
+    if   idx == 0:  b1 = x2; b2 = y2
+    elif idx == 1:  b1 = x2; a2 = y1
+    elif idx == 2:  a1 = x1; b2 = y2
+    else:           a1 = x1; a2 = y1
 
-# % Display sensing estimation result
-# sensingResult = ['The estimated target range is ', num2str(estimatedRange), ' m.'];
-# sensingResult2 = ['The estimated target velocity is ', num2str(estimatedVelocity), ' m/s.'];
-# disp(sensingResult);
-# disp(sensingResult2);
+# ---- Estimates from the final rectangle center ----
+estimatedDelay    = ((a1 + b1) / 2.0) * (T / M)          # seconds
+estimatedDoppler  = ((a2 + b2) / 2.0) * (deltaf / N)     # Hz
+
+estimatedRange    = float(estimatedDelay * c0 / 2.0)     # meters
+estimatedVelocity = float(estimatedDoppler * c0 / (2.0 * fc))  # m/s
+
+# ---- Build the steering vector (atom) at the estimate ----
+Hp = OTFS_output(Xdd, T, float(estimatedDelay), float(estimatedDoppler))  # (MN,) complex
+
+# ---- Least-squares estimate of complex amplitude alpha ----
+# ydd is your received vectorized DD grid; make sure it's 1-D complex
+ydd = torch.flatten(Ydd.T).to(torch.complex64)  # column-major like MATLAB (:)
+
+num = torch.vdot(Hp, ydd)                       # Hp^H y
+den = torch.vdot(Hp, Hp) + 1e-12                # Hp^H Hp  (regularized)
+estimatedAlpha = num / den
+
+# ---- Report ----
+print(f"Estimated range:    {estimatedRange:.3f} m")
+print(f"Estimated velocity: {estimatedVelocity:.3f} m/s")
+print(f"Estimated alpha:    {estimatedAlpha.real:.3f} + {estimatedAlpha.imag:.3f}j")
+
 
 
 

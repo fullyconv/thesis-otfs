@@ -22,6 +22,11 @@ maximumSensingRange = c0 * cpDuration / 2;
 
 % OTFS ISAC transmitter
 dataBits = randi([0 1], M * N, log2(modSize));
+
+% dataBits = zeros(1, M * N, log2(modSize));
+% bitnum=1024;
+% dataBits(1:bitnum) =randi([0 1], 1,bitnum);
+
 dataDe = bi2de(dataBits);
 dataDe = reshape(dataDe, M, N);
 data = qammod(dataDe, modSize, 'UnitAveragePower',true);
