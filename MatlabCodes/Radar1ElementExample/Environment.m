@@ -12,7 +12,9 @@ classdef Environment
 
         % Physical constants
         c0             = physconst('LightSpeed'); % m/s (Phased Array TB)
-        fc             = 30e9;         % carrier (Hz)
+        fc             = 3e9;         % carrier (Hz)
+        NAntenna       = 8;
+        antennaSpacing = 0.05;        % meters
 
         % Target / channel "defaults" (you can ignore if you pass explicit paths)
         TargetList     = {};            % e.g., array of structs/classes
@@ -78,6 +80,9 @@ classdef Environment
             txSignal = obj.createTxSignal(dataBits);
         end
 
+
+
+        
         %% --------- Channel realization (multi-path delay-Doppler) ----------
         function rxSignal = realizeChannel(obj, alpha, delays, dopplers, txSignal)
             % alpha    : P x 1 complex path gains
@@ -111,6 +116,7 @@ classdef Environment
                 dopplerEffect = exp(1j * 2 * pi * dopplers(p) .* (0:1:(obj.M*obj.N - 1))' * obj.T / obj.M);
                 sig = alpha(p)* dopplerEffect .* txSignal_delay;
                 sig = sum(sig, 2);
+                
                 rx = rx + sig;
             end
 
@@ -118,6 +124,11 @@ classdef Environment
             rxSignal = obj.addAwgn(rx, obj.SNRdB);
         end
     
+        function [Ytf]= sense(obj,rxSignal,ddSignal)
+            Ytf = WignerTransform(rxSignal, obj.M, obj.N);
+
+        end
+
         function [estimatedVelocity,estimatedRange]= estimateRangeVelocity(obj,rxSignal,ddSignal)
         % Sensing receiver
         Ytf = WignerTransform(rxSignal, obj.M, obj.N);

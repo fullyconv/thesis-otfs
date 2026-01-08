@@ -1,0 +1,69 @@
+%%
+
+velocity=300;%m/s
+deltat=0.5;%sec
+course=-30;%degree
+
+%% Target loc
+target_phi=50;
+x=100e3*sind(target_phi);
+y=100e3*cosd(target_phi);
+
+%% Location and Velocity of Radar
+x0=0;
+y0=0;
+vx=velocity*sind(course);
+vy=velocity*cosd(course);
+
+
+t=0:deltat:90;
+
+%%
+x_t=x0+vx*t;
+y_t=y0+vy*t;
+
+
+%%
+d=([x_t;y_t]-[x;y]);
+
+alpha_t=atan2d(d(1,:),d(2,:));
+dalpha_dt=(alpha_t(1:end-1)-alpha_t(2:end))/deltat;
+
+%%
+
+% Equation 13, 14, 15
+k=1;
+btm=zeros(1,length(t))+30;
+dm=linspace(0,50,length(t));%meters
+gtm=k*cosd(btm).*dm;
+htm=k*sind(btm).*dm;
+
+p_t=(gtm.*sind(alpha_t).*dalpha_dt')';
+A_t=[gtm',htm'];
+
+%Equation 16
+s_hat_t=(A_t'*A_t)^-1*A_t'*p_t;
+
+%Equation 17
+dalpha_hat_t=sqrt(s_hat_t(1,:).^2+s_hat_t(2,:).^2);
+alpha_hat_t=atan2d(s_hat_t(1,:),s_hat_t(2,:));
+
+%% constructing PLS
+% Calculate the estimated position based on the estimated angles
+% b=Hu
+
+%% Eq 21 constructing H and b
+%constructing b
+y_t=y_t(1:end-1);
+x_t=x_t(1:end-1);
+b_alphahat_t=y_t.*cosd(alpha_hat_t)-x_t.*sind(alpha_hat_t);
+b_dalphahat_t=cosd(alpha_hat_t).*(dalpha_hat_t.*x_t-vy)+...
+    sind(alpha_hat_t).*(dalpha_hat_t.*y_t-vx);
+b=[b_alphahat_t;b_dalphahat_t];
+
+%constructing H
+h_alphahat_t=[-sind(alpha_hat_t)',cosd(alpha_hat_t)'];
+h_dalphahat_t=[dalpha_hat_t'.*cosd(alpha_hat_t)',dalpha_hat_t'.*sind(alpha_hat_t)'];
+H=[h_alphahat_t,h_dalphahat_t];
+
+u_pls=(H'*H)^-1*H'*b'

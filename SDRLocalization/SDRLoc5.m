@@ -1,0 +1,38 @@
+% -------- Veri hazırlığı --------
+n_objects = 200;
+pis = 10*randn(n_objects,2);
+xs = [0,20];                          % Sabit nokta A (Hedef)
+ys = [150,200];                        % Sabit nokta B (Referans)
+
+% Gerçek mesafeler
+d_yp = sqrt(sum((ys - pis).^2,2));     
+d_xp = sqrt(sum((xs - pis).^2,2));     
+d_xy = sqrt(sum((xs - ys).^2));
+
+% Ölçüm Modeli (Örnek: d_meas = d_yp + d_xp - d_xy + gürültü)
+d_meas = d_yp + d_xp - d_xy + 1*randn(n_objects,1) ; 
+
+% -------- CVX Optimizasyonu --------
+cvx_begin 
+    variable x_est(1,2)                
+    variable xp_est(n_objects)              
+    variable xy_est
+    variable residual(n_objects)
+    
+    minimize( sum_square( residual ) )
+
+    subject to
+        
+        for i = 1:n_objects
+            abs(-xp_est(i) + xy_est + d_meas(i) - d_yp(i)) <= residual(i);
+            norm(x_est - pis(i,:)) <= xp_est(i);
+        end
+
+        norm(x_est - ys) <= xy_est;
+
+        xp_est >= 0;
+        xy_est >= 0;
+cvx_end
+% -------- Sonuç --------
+fprintf('Tahmin edilen konum: (%.4f , %.4f)\n', x_est(1), x_est(2));
+fprintf('Gerçek konum        : (%.4f , %.4f)\n', xs(1), xs(2));

@@ -14,14 +14,26 @@ alpha = 1.0 * exp(1j*2*pi*rand);         % random phase
 
 rx = env.realizeChannel(alpha, tau, fd, tx);
 
-[estimatedVelocity,estimatedRange]= env.estimateRangeVelocity(rx,dd)
+[estimatedVelocity,estimatedRange]= env.estimateRangeVelocity(rx,dd);
+
+
+
 
 %% MULTI OBJECT
-
-ObjectList=repmat(Platform,1,10);
-velocityList=linspace(0,90,10)
+% 
+velocityList=linspace(0,90,10);
 positionList=100*[randn(1,10);randn(1,10)];
-rangeList=sqrt(positionList(1,:).^2+positionList(2,:).^2)
+rangeList=sqrt(positionList(1,:).^2+positionList(2,:).^2);
+
+ObjectList=cell(1,length(positionList));
+for i=1:length(positionList)
+    ObjectList{i} = Platform(0, velocityList(i), positionList(:,i));
+end
+ObjectList=[ObjectList{:}];
+env.TargetList=ObjectList;
+
+
+%%
 
 tau = 2*rangeList/env.c0;       % seconds
 lambda = env.c0/env.fc;

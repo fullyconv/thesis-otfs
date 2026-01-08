@@ -1,0 +1,39 @@
+% -------- Veri hazırlığı --------
+n_objects = 20;
+pis = 100*randn(n_objects,2);          % 20 ölçüm noktası (20x2)
+xs = [10,10];                            % Sabit nokta A
+ys = [150,200];                        % Sabit nokta B
+
+% Gerçek mesafeler
+d_yp = sqrt(sum((ys - pis).^2,2));     % B -> pis
+d_xp = sqrt(sum((xs - pis).^2,2));     % A -> pis
+
+% Ölçüm (gerçek + gürültü)
+d_meas = d_yp + d_xp + 1*randn(n_objects,1); % 20x1
+
+% -------- CVX Optimizasyonu --------
+cvx_begin quiet
+    variable x_est(1,2)                % Tahmini konum (x, y)
+    
+    % Tahmini mesafeler: A' = x_est, B sabit = ys
+    % d_est = sum((sum((repmat(x_est,n_objects,1) - pis).^2,2)) + (d_meas-d_yp).^2); % (x_est -> pis) + (ys -> pis)
+    
+    % En küçük kare hatası
+    d_xest_p=sqrt(sum((repmat(x_est,n_objects,1) - pis).^2,2)) ;
+    minimize sum(d_xest_p.^2 +(d_meas-d_yp).^2+2*(d_meas-d_yp).*d_xest_p)
+    % )
+
+cvx_end
+
+% -------- Sonuç --------
+fprintf('Tahmin edilen konum: (%.4f , %.4f)\n', x_est(1), x_est(2));
+fprintf('Gerçek konum        : (%.4f , %.4f)\n', xs(1), xs(2));
+
+% Görselleştirme (isteğe bağlı)
+figure; hold on; grid on;
+plot(pis(:,1), pis(:,2), 'ko', 'MarkerSize', 8, 'DisplayName', 'Ölçüm noktaları');
+plot(ys(1), ys(2), 'bs', 'MarkerSize', 10, 'DisplayName', 'B (ys)');
+plot(xs(1), xs(2), 'r^', 'MarkerSize', 10, 'DisplayName', 'A (gerçek)');
+plot(x_est(1), x_est(2), 'gd', 'MarkerSize', 12, 'DisplayName', 'A (tahmin)');
+legend('Location', 'best');
+xlabel('X'); ylabel('Y'); title('Konum tahmini - (CVX)');
