@@ -144,7 +144,6 @@ classdef Environment
         profile = zeros(obj.M, obj.N);
         for m = 1:length(delayList)
             for n = 1:length(DopplerList)
-                
                 ydd_p = obj.OTFS_approximatedOutput(Xdd, obj.T, delayList(m), DopplerList(n));
                 profile(m, n) = abs(ydd_p' * ydd)^2;
             end
