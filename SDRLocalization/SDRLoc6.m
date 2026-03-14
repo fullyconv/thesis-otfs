@@ -4,7 +4,7 @@ close all
 % -------- Veri hazırlığı --------
 n_objects = 10;
 pis = 100*randn(n_objects,2);          % 20 ölçüm noktası (20x2)
-xs = [50,20];                            % Sabit nokta A
+xs = [50,50];                            % Sabit nokta A
 ys = [150,200];                        % Sabit nokta B
 
 % Gerçek mesafeler
@@ -14,7 +14,8 @@ d_xp = sqrt(sum((xs - pis).^2,2));     % A -> pis
 % Ölçüm (gerçek + gürültü)
 d_meas = d_yp + d_xp + 2*randn(n_objects,1)-norm(xs - ys); % 20x1
 xy_est=0;
-for k=1:15
+estimates=[];
+for k=1:10
     cvx_begin quiet
         variable x_est(1,2)
         variable z(n_objects)
@@ -27,14 +28,19 @@ for k=1:15
     cvx_end
     xy_est=norm(x_est - ys);
     fprintf("step %d \t xest=%f %f\n",k,x_est(1),x_est(2))
+    estimates=[estimates;x_est];
 end
 
 % -------- Sonuç --------
 fprintf('Tahmin edilen konum: (%.4f , %.4f)\n', x_est(1), x_est(2));
 fprintf('Gerçek konum        : (%.4f , %.4f)\n', xs(1), xs(2));
 
+figure(1)
+plot(estimates(:,1),estimates(:,2),"Marker","*","Color","g");hold on
+plot(xs(:,1),xs(:,2),"Marker","v","Color","r");hold off
+
 % Görselleştirme (isteğe bağlı)
-figure; hold on; grid on;
+figure(2); hold on; grid on;
 plot(pis(:,1), pis(:,2), 'ko', 'MarkerSize', 8, 'DisplayName', 'Ölçüm noktaları');
 plot(ys(1), ys(2), 'bs', 'MarkerSize', 10, 'DisplayName', 'B (ys)');
 plot(xs(1), xs(2), 'r^', 'MarkerSize', 10, 'DisplayName', 'A (gerçek)');

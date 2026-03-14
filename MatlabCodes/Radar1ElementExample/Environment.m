@@ -121,7 +121,8 @@ classdef Environment
             end
 
             % Add AWGN at target SNR (per sample, UnitAveragePower symbols)
-            rxSignal = obj.addAwgn(rx, obj.SNRdB);
+            % rxSignal = obj.addAwgn(rx, obj.SNRdB);
+            rxSignal = rx;
         end
     
         function [Ytf]= sense(obj,rxSignal,ddSignal)
@@ -133,6 +134,7 @@ classdef Environment
         % Sensing receiver
         Ytf = WignerTransform(rxSignal, obj.M, obj.N);
         Ydd = SFFT(Ytf, obj.M, obj.N);
+
         Xdd = ddSignal;
         
         % Two-phase sensing estimation algorithm
