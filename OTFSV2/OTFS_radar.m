@@ -1,0 +1,259 @@
+clc, clear
+
+%% Waveform parameters
+M = 256; % subcarrier number
+N = 16; % symbol number
+modSize = 4; % modulation size
+deltaf = 15e3 * 2^4; % subcarrier spacing
+T = 1 / deltaf; % symbol duration
+cpSize = M / 4;
+cpDuration = cpSize / M * T;
+
+%% Channel parameters
+c0 = physconst('LightSpeed'); % light of speed
+fc = 30e9; % carrier frequency
+lambda = c0 / fc;
+ArrayGeometry = 'Circular';
+N_ant = 100;
+d = lambda / 2;
+
+N_RIS=4;
+Rx = [0, 0];     % Alıcı İHA (i) konumu
+Tx = [100, 80];   % Verici İHA (j) konumu
+Vx = [0, 0];    % Alıcı İHA hızı
+Vy = [0, 0];   % Verici İHA hızı
+RIS_pos=100*randn(N_RIS,2);
+
+
+d_xp = vecnorm(Tx - RIS_pos, 2, 2); % Alıcı ile yansıtıcılar arası mesafe
+d_yp = vecnorm(Rx - RIS_pos, 2, 2); % Verici ile yansıtıcılar arası mesafe
+d_xy = vecnorm(Rx - Tx, 2, 2); % Verici ile yansıtıcılar arası mesafe
+
+targetDistance = (d_xp + d_yp-d_xy) ;
+targetVelocity = zeros(1,N_RIS);
+targetAngle    = atan2d(RIS_pos(:,1),RIS_pos(:,2))*pi/180;
+
+% targetDistance = [30, 50, 130]; % multiple target ranges
+% targetVelocity = [72 / 3.6, 90 / 3.6, 36 / 3.6]; % multiple target velocities
+% targetAngle = [10, 120, 45] * pi / 180; % multiple target angles in radians
+
+targetDelay = range2time(targetDistance, c0);
+targetDoppler = speed2dop(2 * targetVelocity, c0 / fc);
+numTargets = length(targetDistance);
+targetCoefficient = exp(1j * 2 * pi * rand(1, numTargets));
+SNRdB = 10;
+maximumSensingRange = c0 * cpDuration / 2;
+
+%% OTFS ISAC transmitter
+dataBits = randi([0 1], M * N, log2(modSize));
+dataDe = bi2de(dataBits);
+dataDe = reshape(dataDe, M, N);
+data = qammod(dataDe, modSize, 'UnitAveragePower',true);
+ddSignal = data;
+tfSignal = ISFFT(ddSignal, M, N);
+txFrame = ifft(tfSignal) * sqrt(M);
+txSignal = reshape(txFrame, [], 1);
+
+%% Channel realization
+alpha = targetCoefficient;
+delay = targetDelay;
+doppler = targetDoppler;
+tfSignal = fft(reshape(txSignal, M, N)) / sqrt(M);
+
+rxSignal = zeros(N_ant, M * N);
+for p = 1:numTargets
+    txSignal_delay = zeros(M * N, 1);
+    l_tau = ceil(delay(p) / (T / M));
+    txSignal_delay(:, 1) = circshift(reshape(circshift(ifft(diag(exp(-1j * 2 * pi * (0:1:(M-1)) *  deltaf * delay(p))) * tfSignal ) * sqrt(M), - l_tau ), [], 1), l_tau);
+    dopplerEffect = exp(1j * 2 * pi * doppler(p) .* (0:1:(M*N - 1))' * T / M);
+    targetSignal = repmat(alpha(p), M*N, 1) .* dopplerEffect .* txSignal_delay;
+    
+    % Get steering vector for this target
+    a_p = createSteeringVector(ArrayGeometry, lambda, targetAngle(p), d, N_ant);
+    rxSignal = rxSignal + a_p * targetSignal.';
+end
+rxSignal = awgn(rxSignal, SNRdB, 'measured');
+
+%% Sensing receiver
+Ydd_3D = zeros(N_ant, M, N);
+for antIdx = 1:N_ant
+    Ytf_ant = WignerTransform(rxSignal(antIdx, :).', M, N);
+    Ydd_3D(antIdx, :, :) = SFFT(Ytf_ant, M, N);
+end
+
+% Use the first antenna's DD signal for the legacy delay-doppler estimation
+Ydd = squeeze(Ydd_3D(1, :, :));
+Xdd = ddSignal;
+
+%% Two-phase sensing estimation algorithm
+ydd = Ydd(:);
+K = 60;
+% phase I
+delayList = (0:1:(M-1)) * T / M;
+DopplerList = (-N/2:1:(N/2 - 1)) * deltaf / N;
+profile = zeros(M, N);
+for m = 1:length(delayList)
+    for n = 1:length(DopplerList)
+        ydd_p = OTFS_approximatedOutput(Xdd, T, delayList(m), DopplerList(n));
+        profile(m, n) = abs(ydd_p' * ydd)^2;
+    end
+end
+% Peak detection for multiple targets
+threshold = max(profile(:)) * 0.2; % Base threshold to filter noise
+isMax = true(size(profile));
+for i = -1:1
+    for j = -1:1
+        if i == 0 && j == 0
+            continue;
+        end
+        shifted_profile = circshift(profile, [i, j]);
+        % Edge handling for delay (non-circular in delay dimension)
+        if i == 1
+            shifted_profile(1, :) = 0;
+        elseif i == -1
+            shifted_profile(end, :) = 0;
+        end
+        isMax = isMax & (profile >= shifted_profile);
+    end
+end
+peaks = isMax & (profile > threshold);
+[mi_all_unsorted, ni_all_unsorted] = find(peaks);
+peak_values = profile(peaks);
+[~, sort_idx] = sort(peak_values, 'descend');
+mi_all = mi_all_unsorted(sort_idx);
+ni_all = ni_all_unsorted(sort_idx);
+numTargetsDetected = length(mi_all);
+
+estimatedRange = zeros(numTargetsDetected, 1);
+estimatedVelocity = zeros(numTargetsDetected, 1);
+estimatedAngle = zeros(numTargetsDetected, 1);
+estimatedAlpha = zeros(numTargetsDetected, 1);
+
+%% Display true targets
+disp('--- Target Parameters ---');
+for p = 1:numTargets
+    disp(['Target ', num2str(p), ': Range = ', num2str(targetDistance(p)), ' m, Velocity = ', num2str(targetVelocity(p)), ' m/s, Angle = ', num2str(targetAngle(p) * 180 / pi), ' deg.']);
+end
+disp(' ');
+
+disp('--- Sensing Estimation Results ---');
+for targetIdx = 1:numTargetsDetected
+    mi = mi_all(targetIdx);
+    ni = ni_all(targetIdx);
+
+    % phase II
+    phi = double( (sqrt(5) - 1) / 2);
+    a1 = mi - 2; b1 = mi;
+    a2 = ni - N/2 - 2; b2 = ni - N/2;
+    for k = 1:K
+        I1 = b1 - a1; I2 = b2 - a2;
+        x1 = a1 + (1 - phi) * I1; x2 = a1 + phi * I1;
+        y1 = a2 + (1 - phi) * I2; y2 = a2 + phi * I2;
+        ydd_11 = OTFS_output(Xdd, T, x1 * T / M, y1 * deltaf / N);
+        ydd_12 = OTFS_output(Xdd, T, x1 * T / M, y2 * deltaf / N);
+        ydd_21 = OTFS_output(Xdd, T, x2 * T / M, y1 * deltaf / N);
+        ydd_22 = OTFS_output(Xdd, T, x2 * T / M, y2 * deltaf / N);
+        f11 = abs(ydd_11' * ydd)^2;
+        f12 = abs(ydd_12' * ydd)^2;
+        f21 = abs(ydd_21' * ydd)^2;
+        f22 = abs(ydd_22' * ydd)^2;
+        [~, fmax] = max([f11, f12, f21, f22]);
+        switch fmax
+            case 1, b1 = x2; b2 = y2;
+            case 2, b1 = x2; a2 = y1;
+            case 3, a1 = x1; b2 = y2;
+            case 4, a1 = x1; a2 = y1;
+        end
+    end
+    estimatedDelay = (a1 + b1) / 2 * T / M;
+    estimatedDoppler = (a2 + b2) / 2 * deltaf / N;
+    estimatedRange(targetIdx) = estimatedDelay * c0 / 2;
+    estimatedVelocity(targetIdx) = estimatedDoppler * c0 / fc / 2;
+    Hp = OTFS_output(Xdd, T, estimatedDelay, estimatedDoppler);
+    estimatedAlpha(targetIdx) = (Hp' * Hp) \ (Hp' * ydd);
+
+    % Angle Estimation (MUSIC-based AoA)
+    % Extract the spatial signal (channel coefficient) for this target across all antennas
+    spatial_signal = zeros(N_ant, 1);
+    for antIdx = 1:N_ant
+        ydd_ant = squeeze(Ydd_3D(antIdx, :, :));
+        spatial_signal(antIdx) = (Hp' * Hp) \ (Hp' * ydd_ant(:));
+    end
+    
+    % Sample covariance matrix (single snapshot for this DD bin)
+    R_cov = spatial_signal * spatial_signal';
+    
+    % Eigen-decomposition
+    [E_cov, D_cov] = eig(R_cov);
+    [~, sort_idx_eig] = sort(diag(abs(D_cov)), 'descend');
+    E_cov = E_cov(:, sort_idx_eig);
+    
+    % Noise subspace (assuming 1 dominant signal per DD peak)
+    En = E_cov(:, 2:end);
+    
+    % MUSIC spectrum peak search
+    theta_search = -180:0.1:180; % Search grid in degrees
+    P_music = zeros(size(theta_search));
+    
+    for th_idx = 1:length(theta_search)
+        th_rad = theta_search(th_idx) * pi / 180;
+        a_theta = createSteeringVector(ArrayGeometry, lambda, th_rad, d, N_ant);
+        P_music(th_idx) = 1 / abs(a_theta' * (En * En') * a_theta);
+    end
+    
+    [~, max_idx_music] = max(P_music);
+    estimatedAngle(targetIdx) = theta_search(max_idx_music);
+
+    sensingResult = ['Detected Target ', num2str(targetIdx), ': Estimated Range = ', num2str(estimatedRange(targetIdx)), ' m, Estimated Velocity = ', num2str(estimatedVelocity(targetIdx)), ' m/s, Estimated Angle = ', num2str(estimatedAngle(targetIdx)), ' deg.'];
+    disp(sensingResult);
+end
+%%
+% delta_theta=wrap(targetAngle-estimatedAngle')
+targetAngle=targetAngle*180/pi;
+costmtx=min(wrapTo360(abs(estimatedAngle-targetAngle')),360-wrapTo360(abs(estimatedAngle-targetAngle')));
+[assignments, unassignedRows, unassignedColumns] = ...
+    assignjv(costmtx, 10);
+
+
+[x_est, rmse_history] = IRLS2(estimatedRange(assignments(:,1)), RIS_pos(assignments(:,2),:), Rx);
+
+disp('--- Localization Result ---');
+disp(['True Tx Position: [', num2str(Tx(1)), ', ', num2str(Tx(2)), ']']);
+disp(['Estimated Tx Position: [', num2str(x_est(1)), ', ', num2str(x_est(2)), ']']);
+disp(['Localization Error: ', num2str(norm(Tx - x_est)), ' m']);
+
+
+
+%% matlab functions
+function tfSignal = ISFFT(ddSignal, M, N)
+tfSignal = fft(ifft(ddSignal.').') * sqrt(N) / sqrt(M);
+end
+
+function tfSignal = WignerTransform(rxSignal, M, N)
+tfSignal = reshape(rxSignal, M, N);
+tfSignal = fft(tfSignal) / sqrt(M);
+end
+
+function ddSignal = SFFT(tfSignal, M, N)
+ddSignal = ifft(fft(tfSignal.').') / sqrt(N) * sqrt(M);
+end
+
+function ydd = OTFS_output(Xdd, T, delay, Doppler)
+[M, N] = size(Xdd);
+lt = ceil(delay / (T / M));
+deltaf = 1 / T;
+Xtf = ISFFT(Xdd, M, N);
+rt = exp(1j * 2 * pi * Doppler * (0:1:(M*N - 1))' * T / M) .* circshift(reshape(circshift(ifft(diag(exp(-1j * 2 * pi * (0:1:(M-1)) *  deltaf * delay)) * Xtf ) * sqrt(M), - lt ), [], 1), lt);
+Rt = reshape(rt, M, N);
+Ydd = fft(Rt.').' / sqrt(N);
+ydd = Ydd(:);
+end
+
+function ydd = OTFS_approximatedOutput(Xdd, T, delay, Doppler)
+[M, N] = size(Xdd);
+lt = ceil(delay / (T / M));
+deltaf = 1 / T;
+kn = ceil(Doppler / (deltaf / N));
+Ydd = circshift(Xdd, [lt kn]);
+ydd = Ydd(:);
+end
